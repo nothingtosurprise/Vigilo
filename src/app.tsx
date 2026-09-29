@@ -1,39 +1,42 @@
-import { useCallback, useState, useEffect } from "preact/hooks";
+import { useCallback, useState, useEffect, useRef } from "preact/hooks";
 import "./app.css";
-import { TelegramSettings } from "./components/TelegramSettings";
-import { MotionSensitivitySettings } from "./components/MotionSensitivitySettings";
-import { CameraList } from "./components/CameraList";
+import { TelegramSettings, TelegramAdvancedSettings } from "./components/TelegramSettings";
+import { MotionSensitivitySettings, DetectionAdvancedSettings } from "./components/MotionSensitivitySettings";
+import { AdvancedSection } from "./components/AdvancedSection";
 import { useTelegram } from "./hooks/useTelegram";
-import { useCamera } from "./hooks/useCamera";
-
+import { useDetectionBackend } from "./hooks/useDetectionBackend";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { motion } from "motion/react";
+import { motion, MotionConfig } from "motion/react";
 import { useTheme } from "./hooks/useTheme";
 import logo from "./assets/logo.svg";
-import { Github, Eye, EyeOff, Sun, Moon, Activity, CheckCircle, AlertCircle } from "lucide-react";
+import { Eye, EyeOff, Sun, Moon, Activity, CheckCircle, AlertCircle } from "lucide-react";
+import { TrackedObjectsList } from "./components/TrackedObjectsList";
+import { InferenceTest } from "./components/InferenceTest";
 import {
   MOTION_ACTIVE_DURATION_MS,
-  DEFAULT_DIFF_THRESHOLD,
-  DEFAULT_MOTION_PIXEL_RATIO,
   DEFAULT_INTERVAL_MS,
   KEYBOARD_SHORTCUTS,
 } from "./lib/constants";
+import { Camera } from "./components/Camera";
 
 export function App() {
   const { theme, setTheme } = useTheme();
-  const [cameras, setCameras] = useState<string[]>([]);
   const [showCameras, setShowCameras] = useState(true);
   const [lastMotionTime, setLastMotionTime] = useState<Date | null>(null);
-  const [diffThreshold, setDiffThreshold] = useState(DEFAULT_DIFF_THRESHOLD);
-  const [motionPixelRatio, setMotionPixelRatio] = useState(DEFAULT_MOTION_PIXEL_RATIO);
   const [intervalMs, setIntervalMs] = useState(DEFAULT_INTERVAL_MS);
   const [latestFrames, setLatestFrames] = useState<Record<string, string>>({});
 
-  const { availableDevices, isLoadingCameras, cameraError, requestCameraAccess, addCamera } = useCamera();
+  const { mode, trackedObjects, addDiscoveredObject } = useDetectionBackend();
+
+  // Local sync to prevent multiple rapid discoveries of the same object before React state updates
+  const locallyKnownObjects = useRef<Set<string>>(new Set(Object.keys(trackedObjects)));
+  useEffect(() => {
+    Object.keys(trackedObjects).forEach((k) => locallyKnownObjects.current.add(k));
+  }, [trackedObjects]);
 
   const updateLatestFrame = useCallback((deviceId: string, frame: string) => {
-    setLatestFrames(prev => ({ ...prev, [deviceId]: frame }));
+    setLatestFrames((prev) => ({ ...prev, [deviceId]: frame }));
   }, []);
 
   const {
@@ -44,102 +47,116 @@ export function App() {
     setSendTelegrams,
     debounceTime,
     setDebounceTime,
-    sendTelegramMessage,
-    sendStatusResponse,
-    setStatusHandler,
     botUsername,
+    tokenError,
+    isValidatingToken,
     resetTelegramSettings,
+    sendTelegramMessage,
+    askToTrackObject,
+    sendStatusResponse,
+    sendTestMessage,
+    setStatusHandler,
   } = useTelegram();
 
   const handleStatusRequest = useCallback(async () => {
     try {
-      const frames = cameras.map((deviceId, index) => ({
-        frame: latestFrames[deviceId] || '',
-        cameraIndex: index
-      })).filter(f => f.frame);
+      const frames = Object.entries(latestFrames)
+        .map(([_deviceId, frame], index) => ({
+          frame: frame,
+          cameraIndex: index,
+        }))
+        .filter((f) => f.frame);
+
       if (frames.length > 0) {
         sendStatusResponse(frames);
       } else {
         // Fallback to dummy if no frames
-        const canvas = document.createElement('canvas');
+        const canvas = document.createElement("canvas");
         canvas.width = 640;
         canvas.height = 480;
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext("2d");
         if (ctx) {
-          ctx.fillStyle = 'red';
+          ctx.fillStyle = "red";
           ctx.fillRect(0, 0, 640, 480);
-          ctx.fillStyle = 'white';
-          ctx.font = '30px Arial';
-          ctx.fillText('No camera frames available', 150, 240);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+          ctx.fillStyle = "white";
+          ctx.font = "30px Arial";
+          ctx.fillText("No camera frames available", 150, 240);
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
           sendStatusResponse([{ frame: dataUrl, cameraIndex: 0 }]);
         }
       }
     } catch (error) {
       console.error("Error handling status request:", error);
     }
-  }, [cameras, latestFrames, sendStatusResponse]);
+  }, [latestFrames, sendStatusResponse]);
 
   useEffect(() => {
     setStatusHandler(handleStatusRequest);
   }, [setStatusHandler, handleStatusRequest]);
 
-  const isAppReady = cameras.length > 0 && telegramBotToken && telegramChatId;
-  const isMotionActive = lastMotionTime && (Date.now() - lastMotionTime.getTime()) < MOTION_ACTIVE_DURATION_MS;
-
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (telegramBotToken && telegramChatId) {
-        // Note: This may not always send due to page unloading
-        navigator.sendBeacon(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, JSON.stringify({
-          chat_id: telegramChatId,
-          text: "🔴 System is closing.",
-        }));
-      }
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [telegramBotToken, telegramChatId]);
-
-  const handleAddCamera = useCallback(() => {
-    requestCameraAccess();
-  }, [requestCameraAccess]);
-
-  const handleSelectCamera = useCallback((deviceId: string) => {
-    if (!cameras.includes(deviceId)) {
-      setCameras([...cameras, deviceId]);
-    }
-    addCamera(deviceId);
-  }, [cameras, addCamera]);
-
-  const handleRemoveCamera = useCallback((deviceId: string) => {
-    setCameras(cameras.filter((id) => id !== deviceId));
-    setLatestFrames(prev => {
-      const newFrames = { ...prev };
-      delete newFrames[deviceId];
-      return newFrames;
-    });
-  }, [cameras]);
+  const isAppReady = Object.keys(latestFrames).length > 0 && telegramBotToken && telegramChatId;
+  const isMotionActive =
+    lastMotionTime && Date.now() - lastMotionTime.getTime() < MOTION_ACTIVE_DURATION_MS;
 
   const handleMotion = useCallback(
-    (timestamp: Date, frame: string) => {
-      if (!sendTelegrams) {
-        return;
-      }
-      sendTelegramMessage(frame);
+    async (timestamp: Date, frame: string, _deviceId: string, boxes: any[]) => {
       setLastMotionTime(timestamp);
+
+      if (!sendTelegrams) return;
+
+      if (mode === "mediapipe" && boxes.length > 0) {
+        let sentAny = false;
+
+        for (const box of boxes) {
+          const label = box.label || "unknown";
+          const confidence = box.confidence || 0;
+          const trackedObj = trackedObjects[label];
+
+          if (!locallyKnownObjects.current.has(label)) {
+            // New object discovered. "person" is tracked by default, so notify
+            // immediately; other classes ask for opt-in via Telegram.
+            locallyKnownObjects.current.add(label);
+            addDiscoveredObject(label);
+            if (label.toLowerCase() === "person") {
+              if (!sentAny) {
+                await sendTelegramMessage(
+                  frame,
+                  `🚨 Detected: ${label} (${Math.round(confidence * 100)}%)`,
+                );
+                sentAny = true;
+              }
+            } else {
+              await askToTrackObject(label, frame);
+            }
+          } else if (trackedObj && trackedObj.isTracking) {
+            // It's tracked. Send a regular notification.
+            if (!sentAny) {
+              await sendTelegramMessage(
+                frame,
+                `🚨 Detected: ${label} (${Math.round(confidence * 100)}%)`,
+              );
+              sentAny = true; // prevent sending multiple photos for multiple tracked objects in the same frame
+            }
+          }
+        }
+      } else if (mode === "opencv" && boxes.length > 0) {
+        await sendTelegramMessage(frame, `🚨 Pixel Motion Detected!`);
+      }
     },
-    [sendTelegrams, sendTelegramMessage]
+    [
+      sendTelegrams,
+      mode,
+      trackedObjects,
+      addDiscoveredObject,
+      askToTrackObject,
+      sendTelegramMessage,
+    ],
   );
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       switch (e.key.toLowerCase()) {
-        case KEYBOARD_SHORTCUTS.ADD_CAMERA:
-          handleAddCamera();
-          break;
         case KEYBOARD_SHORTCUTS.TOGGLE_THEME:
           setTheme(theme === "dark" ? "light" : "dark");
           break;
@@ -148,148 +165,149 @@ export function App() {
           break;
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [theme, showCameras, handleAddCamera]);
-
-
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [theme, showCameras]);
 
   return (
-    <div class="min-h-screen w-full max-w-7xl mx-auto p-2 sm:p-4">
-      <header class="flex flex-col sm:flex-row items-center justify-between w-full mb-8 gap-4 p-4 bg-card rounded-lg shadow-sm">
-        <div class="flex items-center gap-3">
-          <img src={logo} alt="Vigilo Logo" class="logo" />
-          <h1 class="text-2xl font-bold">Vigilo</h1>
-          <div class="flex items-center gap-1 text-sm">
+    <MotionConfig reducedMotion="user">
+    <div className="min-h-screen w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 sm:py-4">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:px-4 focus:py-2 focus:bg-background focus:text-foreground focus:rounded-md focus:ring-2 focus:ring-ring"
+      >
+        Skip to main content
+      </a>
+      <header className="flex flex-wrap sm:flex-nowrap items-center justify-between w-full mb-4 sm:mb-6 gap-3 p-4 bg-card rounded-lg shadow-sm">
+        <div className="flex items-center gap-3 min-w-0 flex-wrap">
+          <img src={logo} alt="Vigilo Logo" className="w-8 h-8 shrink-0" />
+          <h1 className="text-2xl font-bold leading-tight shrink-0">Vigilo</h1>
+          <div className="flex items-center gap-1 text-base shrink-0" role="status" aria-live="polite">
             {isMotionActive ? (
-              <Activity class="w-4 h-4 text-red-500" />
+              <Activity className="w-4 h-4 text-red-600 dark:text-red-400" aria-hidden="true" />
             ) : isAppReady ? (
-              <CheckCircle class="w-4 h-4 text-green-500" />
+              <CheckCircle className="w-4 h-4 text-green-700 dark:text-green-400" aria-hidden="true" />
             ) : (
-              <AlertCircle class="w-4 h-4 text-yellow-500" />
+              <AlertCircle className="w-4 h-4 text-yellow-700 dark:text-yellow-400" aria-hidden="true" />
             )}
-            <span class="hidden sm:inline">
+            <span>
               {isMotionActive ? "Motion Detected" : isAppReady ? "Ready" : "Setup Required"}
             </span>
           </div>
         </div>
-        <div class="flex gap-2">
+        <div className="flex flex-wrap gap-2 shrink-0">
           <Button
             onClick={() => setShowCameras(!showCameras)}
             variant="outline"
             size="sm"
+            className="min-h-[44px] min-w-[44px]"
             title="Toggle camera previews (Shortcut: H)"
+            aria-label={showCameras ? "Hide camera previews" : "Show camera previews"}
+            aria-pressed={showCameras}
+            aria-expanded={showCameras}
+            aria-keyshortcuts="h"
           >
-            {showCameras ? <EyeOff class="w-4 h-4 mr-2" /> : <Eye class="w-4 h-4 mr-2" />}
-            {showCameras ? "Hide" : "Show"} Cameras
+            {showCameras ? <EyeOff className="w-4 h-4" aria-hidden="true" /> : <Eye className="w-4 h-4" aria-hidden="true" />}
+            <span className="hidden sm:inline">{showCameras ? "Hide" : "Show"} Cameras</span>
+            <kbd className="hidden md:inline text-xs text-muted-foreground border rounded px-1" aria-hidden="true">H</kbd>
           </Button>
           <Button
             onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
             variant="outline"
             size="sm"
+            className="min-h-[44px] min-w-[44px]"
             title="Toggle theme (Shortcut: T)"
+            aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            aria-pressed={theme === "dark"}
+            aria-keyshortcuts="t"
           >
-            {theme === "dark" ? <Sun class="w-4 h-4 mr-2" /> : <Moon class="w-4 h-4 mr-2" />}
-            Theme
+            {theme === "dark" ? <Sun className="w-4 h-4" aria-hidden="true" /> : <Moon className="w-4 h-4" aria-hidden="true" />}
+            <span className="hidden sm:inline">Theme</span>
+            <kbd className="hidden md:inline text-xs text-muted-foreground border rounded px-1" aria-hidden="true">T</kbd>
           </Button>
-          <a
-            href="https://github.com/eifr/Vigilo"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Button variant="outline" size="sm">
-              <Github class="w-4 h-4 mr-2" />
-              GitHub
-            </Button>
-          </a>
         </div>
       </header>
 
-      <main class="grid grid-cols-1 md:grid-cols-2 gap-8">
+      <main id="main-content" tabIndex={-1} aria-label="Vigilo monitoring dashboard" className="grid grid-cols-1 lg:grid-cols-3 gap-6 sm:gap-8">
         <motion.div
           initial={{ opacity: 0, x: -20 }}
           animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.5 }}
+          transition={{ duration: 0.25, ease: "easeOut" }}
         >
           <Card>
             <CardHeader>
               <CardTitle>Configuration</CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-0 divide-y divide-border">
+              <div className="pb-6">
               <TelegramSettings
                 sendTelegrams={sendTelegrams}
                 setSendTelegrams={setSendTelegrams}
                 telegramBotToken={telegramBotToken}
                 setTelegramBotToken={setTelegramBotToken}
                 telegramChatId={telegramChatId}
-                debounceTime={debounceTime}
-                setDebounceTime={setDebounceTime}
                 botUsername={botUsername}
-                resetTelegramSettings={resetTelegramSettings}
+                tokenError={tokenError}
+                isValidatingToken={isValidatingToken}
+                sendTestMessage={sendTestMessage}
+                onDisconnect={resetTelegramSettings}
               />
-              <MotionSensitivitySettings
-                diffThreshold={diffThreshold}
-                setDiffThreshold={setDiffThreshold}
-                motionPixelRatio={motionPixelRatio}
-                setMotionPixelRatio={setMotionPixelRatio}
-                intervalMs={intervalMs}
-                setIntervalMs={setIntervalMs}
-              />
+              </div>
+              <div className="py-6">
+              <MotionSensitivitySettings />
+              </div>
+              {mode === "mediapipe" && <div className="py-6"><TrackedObjectsList /></div>}
+              <div className="pt-2">
+              <AdvancedSection
+                storageKey="vigilo-advanced-options"
+                description="Fine-tune thresholds, timing, Telegram setup, and test tools."
+              >
+                <TelegramAdvancedSettings
+                  debounceTime={debounceTime}
+                  setDebounceTime={setDebounceTime}
+                  resetTelegramSettings={resetTelegramSettings}
+                />
+                <div className="pt-4 border-t">
+                  <DetectionAdvancedSettings intervalMs={intervalMs} setIntervalMs={setIntervalMs} />
+                </div>
+                <div className="pt-4 border-t">
+                  <InferenceTest />
+                </div>
+              </AdvancedSection>
+              </div>
             </CardContent>
           </Card>
         </motion.div>
+
         <motion.div
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.5, delay: 0.1 }}
+          transition={{ duration: 0.25, delay: 0.1, ease: "easeOut" }}
+          className="lg:col-span-2"
         >
-          <Card>
-            <CardHeader>
-              <CardTitle>Cameras</CardTitle>
-            </CardHeader>
-            <CardContent>
-               <CameraList
-                 cameras={cameras}
-                 availableDevices={availableDevices}
-                 isLoadingCameras={isLoadingCameras}
-                 cameraError={cameraError}
-                 onAddCamera={handleAddCamera}
-                 onSelectCamera={handleSelectCamera}
-                 onRemoveCamera={handleRemoveCamera}
-                 onMotion={handleMotion}
-                 onLatestFrame={updateLatestFrame}
-                 diffThreshold={diffThreshold}
-                 motionPixelRatio={motionPixelRatio}
-                 intervalMs={intervalMs}
-                 showCameras={showCameras}
-               />
-            </CardContent>
-          </Card>
+          {showCameras ? (
+            <div className="min-h-[300px]">
+              <Camera
+                onMotion={handleMotion}
+                onLatestFrame={updateLatestFrame}
+                intervalMs={intervalMs}
+              />
+            </div>
+          ) : (
+            <div className="min-h-[300px] flex items-center justify-center rounded-lg border border-dashed bg-muted/20 p-6 text-center">
+              <p className="text-sm text-muted-foreground">
+                Camera previews hidden. Detection is paused to save battery.
+              </p>
+            </div>
+          )}
         </motion.div>
       </main>
-      <footer class="text-center p-4 text-sm text-muted-foreground space-y-2">
+
+      <footer className="text-center p-4 text-base sm:text-sm text-muted-foreground mt-8 border-t">
         <p>© {new Date().getFullYear()} eifr. All rights reserved.</p>
-        <p>
-          Version 0.0.1 |{" "}
-          <a
-            href="https://github.com/eifr/Vigilo/issues"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="hover:underline"
-          >
-            Report Issues
-          </a>{" "}
-          |{" "}
-          <a
-            href="https://github.com/eifr/Vigilo#readme"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="hover:underline"
-          >
-            Documentation
-          </a>
-        </p>
+        <p>Version 1.0.0</p>
       </footer>
     </div>
+    </MotionConfig>
   );
 }

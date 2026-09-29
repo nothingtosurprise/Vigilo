@@ -1,8 +1,8 @@
 /// <reference lib="webworker" />
 
-import { precacheAndRoute } from 'workbox-precaching';
-import { registerRoute } from 'workbox-routing';
-import { StaleWhileRevalidate } from 'workbox-strategies';
+import { precacheAndRoute } from "workbox-precaching";
+import { registerRoute } from "workbox-routing";
+import { CacheFirst, StaleWhileRevalidate } from "workbox-strategies";
 
 declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: any[];
@@ -10,21 +10,25 @@ declare const self: ServiceWorkerGlobalScope & {
 
 precacheAndRoute(self.__WB_MANIFEST);
 
+// MediaPipe WASM runtime: cached on first use (only the variant the browser
+// needs, ~11MB), available offline afterwards. Same-origin 200s cache by default.
 registerRoute(
-  ({ request }) => request.destination === 'document',
-  new StaleWhileRevalidate()
+  ({ url }) => url.pathname.startsWith("/mediapipe-wasm/"),
+  new CacheFirst({ cacheName: "mediapipe-wasm" }),
 );
 
-self.addEventListener('message', (event: ExtendableMessageEvent) => {
-  if (event.data && event.data.type === 'SKIP_WAITING') {
+registerRoute(({ request }) => request.destination === "document", new StaleWhileRevalidate());
+
+self.addEventListener("message", (event: ExtendableMessageEvent) => {
+  if (event.data && event.data.type === "SKIP_WAITING") {
     self.skipWaiting();
   }
 });
 
-self.addEventListener('install', () => {
+self.addEventListener("install", () => {
   self.skipWaiting();
 });
 
-self.addEventListener('activate', () => {
+self.addEventListener("activate", () => {
   self.clients.claim();
 });
