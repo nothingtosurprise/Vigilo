@@ -21,6 +21,8 @@ export function useTelegram() {
   );
   const [debounceTime, setDebounceTime] = useState(5000); // Wait 5 seconds minimum between global sends
   const [botUsername, setBotUsername] = useState("");
+  const [tokenError, setTokenError] = useState("");
+  const [isValidatingToken, setIsValidatingToken] = useState(false);
 
   const botRef = useRef<Bot | null>(null);
   const { toggleTrackedObject } = useDetectionBackend();
@@ -47,17 +49,38 @@ export function useTelegram() {
 
     if (!telegramBotToken) {
       setBotUsername("");
+      setTokenError("");
+      setIsValidatingToken(false);
       botRef.current = null;
       return;
     }
+
+    setIsValidatingToken(true);
+    setTokenError("");
 
     const bot = new Bot(telegramBotToken);
     botRef.current = bot;
 
     bot.api
       .getMe()
-      .then((me) => setBotUsername(me.username))
-      .catch(console.error);
+      .then((me) => {
+        setBotUsername(me.username);
+        setTokenError("");
+        setIsValidatingToken(false);
+      })
+      .catch((err) => {
+        console.error(err);
+        setBotUsername("");
+        setIsValidatingToken(false);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("401") || msg.toLowerCase().includes("unauthorized")) {
+          setTokenError("Invalid token. Check the token from @BotFather and try again.");
+        } else if (!navigator.onLine) {
+          setTokenError("You appear offline. Check your connection and try again.");
+        } else {
+          setTokenError("Could not validate token. Check the token and try again.");
+        }
+      });
 
     // Initial Registration of Chat ID
     if (!telegramChatId) {
@@ -222,6 +245,20 @@ export function useTelegram() {
     [telegramChatId, telegramBotToken],
   );
 
+  const sendTestMessage = useCallback(async () => {
+    if (!telegramChatId || !botRef.current) return false;
+    try {
+      await botRef.current.api.sendMessage(
+        telegramChatId,
+        "✅ Vigilo test message — notifications are working.",
+      );
+      return true;
+    } catch (error) {
+      console.error("Error sending test message:", error);
+      return false;
+    }
+  }, [telegramChatId]);
+
   const setStatusHandler = useCallback((handler: () => void) => {
     onStatusRequestRef.current = handler;
   }, []);
@@ -232,6 +269,8 @@ export function useTelegram() {
     setTelegramBotToken("");
     setTelegramChatId(0);
     setBotUsername("");
+    setTokenError("");
+    setIsValidatingToken(false);
   }, []);
 
   return {
@@ -244,9 +283,12 @@ export function useTelegram() {
     setDebounceTime,
     sendTelegramMessage,
     sendStatusResponse,
+    sendTestMessage,
     setStatusHandler,
     askToTrackObject,
     botUsername,
+    tokenError,
+    isValidatingToken,
     resetTelegramSettings,
   };
 }

@@ -9,10 +9,12 @@ type UseMultiCameraReturn = {
   availableCameras: MediaDeviceInfo[];
   activeDeviceIds: string[];
   getStream: (deviceId: string) => MediaStream | undefined;
-  addCamera: (deviceId: string) => Promise<void>;
+  addCamera: (deviceId: string) => Promise<boolean>;
   removeCamera: (deviceId: string) => void;
   refreshDevices: () => Promise<void>;
   error: string | null;
+  isRefreshing: boolean;
+  pendingDeviceIds: string[];
 };
 
 export function useCameras(options: UseMultiCameraOptions = {}): UseMultiCameraReturn {
@@ -20,6 +22,8 @@ export function useCameras(options: UseMultiCameraOptions = {}): UseMultiCameraR
   const [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
   const [activeDeviceIds, setActiveDeviceIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [pendingDeviceIds, setPendingDeviceIds] = useState<string[]>([]);
 
   // Streams stored in ref → no rerenders when stream object mutates
   const streamsRef = useRef<Map<string, MediaStream>>(new Map());
@@ -28,6 +32,7 @@ export function useCameras(options: UseMultiCameraOptions = {}): UseMultiCameraR
   // Refresh available devices
   // ------------------------------------------------
   const refreshDevices = useCallback(async () => {
+    setIsRefreshing(true);
     try {
       let devices = await navigator.mediaDevices.enumerateDevices();
       let videoInputs = devices.filter((d) => d.kind === "videoinput");
@@ -44,6 +49,8 @@ export function useCameras(options: UseMultiCameraOptions = {}): UseMultiCameraR
       setAvailableCameras(videoInputs);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to enumerate devices");
+    } finally {
+      setIsRefreshing(false);
     }
   }, []);
 
@@ -51,9 +58,10 @@ export function useCameras(options: UseMultiCameraOptions = {}): UseMultiCameraR
   // Add Camera
   // ------------------------------------------------
   const addCamera = useCallback(async (deviceId: string) => {
-    if (streamsRef.current.has(deviceId)) return;
+    if (streamsRef.current.has(deviceId)) return true;
 
     setError(null);
+    setPendingDeviceIds((prev) => (prev.includes(deviceId) ? prev : [...prev, deviceId]));
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -64,11 +72,15 @@ export function useCameras(options: UseMultiCameraOptions = {}): UseMultiCameraR
       });
 
       streamsRef.current.set(deviceId, stream);
-      setActiveDeviceIds((prev) => [...prev, deviceId]);
+      setActiveDeviceIds((prev) => (prev.includes(deviceId) ? prev : [...prev, deviceId]));
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to access camera");
+      return false;
+    } finally {
+      setPendingDeviceIds((prev) => prev.filter((id) => id !== deviceId));
     }
-  }, []);
+  }, [defaultConstraints]);
 
   // ------------------------------------------------
   // Remove Camera
@@ -130,5 +142,7 @@ export function useCameras(options: UseMultiCameraOptions = {}): UseMultiCameraR
     removeCamera,
     refreshDevices,
     error,
+    isRefreshing,
+    pendingDeviceIds,
   };
 }

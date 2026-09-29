@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# ML model binaries — MediaPipe .tflite lives in public/models/, never commit YOLO weights
+*.onnx
+*.pt
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

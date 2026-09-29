@@ -101,7 +101,7 @@ function drawTextWithBackground(
 export function drawDetections(
   ctx: CanvasRenderingContext2D,
   boxes: BoundingBox[],
-  mode: "yolo" | "opencv",
+  mode: "mediapipe" | "opencv",
 ) {
   if (!boxes || boxes.length === 0) return;
 
@@ -128,9 +128,7 @@ export function drawDetections(
 
   Object.entries(boxesByClass).forEach(([label, classBoxes]) => {
     // Determine color index
-    // For YOLO, we might parse "class_5" or use the label string hash
-    // The reference implementation passes classIdx directly.
-    // Here we'll hash the string to get a stable index if it's not a direct class index.
+    // Hash the label string to get a stable color per class.
     let classIdx = 0;
     if (label.startsWith("class_")) {
       classIdx = parseInt(label.split("_")[1], 10);
@@ -141,60 +139,24 @@ export function drawDetections(
     const fillColor = Colors.getColor(classIdx, 0.2);
     const borderColor = Colors.getColor(classIdx, 0.8);
 
-    // Batch 1: Fill Rects
+    // Batch 1: Fill Rects (pixel coordinates for both backends)
     ctx.fillStyle = fillColor;
     classBoxes.forEach((box) => {
-      let x, y, w, h;
-      if (mode === "yolo") {
-        // Normalized
-        x = box.x * width;
-        y = box.y * height;
-        w = box.width * width;
-        h = box.height * height;
-      } else {
-        // Pixels
-        x = box.x;
-        y = box.y;
-        w = box.width;
-        h = box.height;
-      }
-      ctx.fillRect(x, y, w, h);
+      ctx.fillRect(box.x, box.y, box.width, box.height);
     });
 
     // Batch 2: Stroke Rects
     ctx.lineWidth = lineWidth;
     ctx.strokeStyle = borderColor;
     classBoxes.forEach((box) => {
-      let x, y, w, h;
-      if (mode === "yolo") {
-        x = box.x * width;
-        y = box.y * height;
-        w = box.width * width;
-        h = box.height * height;
-      } else {
-        x = box.x;
-        y = box.y;
-        w = box.width;
-        h = box.height;
-      }
-      ctx.strokeRect(x, y, w, h);
+      ctx.strokeRect(box.x, box.y, box.width, box.height);
     });
 
-    // Batch 3: Text Labels
-    // Only draw text for YOLO or if a label exists
-    if (mode === "yolo") {
+    // Batch 3: Text Labels (only for smart detection)
+    if (mode === "mediapipe") {
       classBoxes.forEach((box) => {
-        let x, y;
-        if (mode === "yolo") {
-          x = box.x * width;
-          y = box.y * height;
-        } else {
-          x = box.x;
-          y = box.y;
-        }
-
         const text = `${box.label || ""} ${box.confidence ? box.confidence.toFixed(2) : ""}`;
-        drawTextWithBackground(ctx, text, x, y, borderColor);
+        drawTextWithBackground(ctx, text, box.x, box.y, borderColor);
       });
     }
   });

@@ -1,6 +1,7 @@
 import type { WorkerMessage, WorkerResponse, BoundingBox, OpenCVConfig } from "../lib/types";
-import cv from "@techstark/opencv-js";
+import cvModule from "@techstark/opencv-js";
 
+let cv: any = null;
 let isInitialized = false;
 let config: OpenCVConfig = { diffThreshold: 25, motionAreaPercentage: 1.0 };
 let previousFrame: any = null;
@@ -9,14 +10,29 @@ let previousFrame: any = null;
 async function initOpenCV(initialConfig: OpenCVConfig) {
   config = initialConfig;
   try {
-    // Wait for runtime to be ready if it isn't
-    if (cv instanceof Promise) {
-      await cv;
-    } else if (cv.onRuntimeInitialized !== undefined) {
-      await new Promise((resolve) => {
-        cv.onRuntimeInitialized = () => resolve(true);
+    // @techstark/opencv-js resolves to the runtime module: either a Promise
+    // of it, or the module itself (already initialized or awaiting the
+    // onRuntimeInitialized callback). The awaited value must be kept —
+    // awaiting without assignment leaves `cv` unusable.
+    if ((cvModule as unknown) instanceof Promise) {
+      cv = await cvModule;
+    } else if ((cvModule as any).Mat) {
+      cv = cvModule;
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("OpenCV runtime init timeout")),
+          20000,
+        );
+        (cvModule as any).onRuntimeInitialized = () => {
+          clearTimeout(timer);
+          resolve();
+        };
       });
+      cv = cvModule;
     }
+
+    if (!cv || !cv.Mat) throw new Error("OpenCV runtime not ready");
 
     isInitialized = true;
     self.postMessage({ type: "INITIALIZED", backend: "opencv", success: true } as WorkerResponse);
